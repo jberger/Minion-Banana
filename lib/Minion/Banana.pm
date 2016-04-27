@@ -68,8 +68,8 @@ sub _update {
   my $query = <<'  SQL';
     UPDATE minion_banana_jobs
     SET status=?
-    WHERE job=? AND status='enabled'
-    RETURNING job, group_id, status
+    WHERE id=? AND status='enabled'
+    RETURNING id, group_id, status
   SQL
   my @args = ($success ? 'finished' : 'failed', $job);
   return $self->pg->db->query($query, @args) unless $cb;
@@ -90,7 +90,7 @@ sub enable_jobs {
   my $query = <<'  SQL';
     UPDATE minion_banana_jobs
     SET status='enabled'
-    WHERE job=any(?) AND status='waiting'
+    WHERE id=any(?) AND status='waiting'
   SQL
   return $self->pg->db->query($query, $jobs)->rows unless $cb;
   $self->pg->db->query($query, $jobs, sub {
@@ -103,14 +103,14 @@ sub jobs_ready {
   my $cb = (ref $_[-1] && ref $_[-1] eq 'CODE') ? pop : undef;
   my ($self, $group) = @_; # $group is optional
   my $query = <<'  SQL';
-    SELECT jobs.job FROM minion_banana_jobs jobs
-    LEFT JOIN minion_banana_job_deps parents ON jobs.job=parents.job
-    LEFT JOIN minion_banana_jobs parent ON parents.depends=parent.job
+    SELECT jobs.id FROM minion_banana_jobs jobs
+    LEFT JOIN minion_banana_job_deps parents ON jobs.id=parents.job_id
+    LEFT JOIN minion_banana_jobs parent ON parents.parent_id=parent.id
     WHERE
       jobs.status='waiting'
       AND (parent.status IS NULL OR parent.status='finished')
       AND (jobs.group_id = $1 OR $1 IS NULL)
-    GROUP BY jobs.job
+    GROUP BY jobs.id
   SQL
   return $self->pg->db->query($query, $group)->arrays->flatten->to_array unless $cb;
   $self->pg->db->query($query, $group, sub {
@@ -122,7 +122,7 @@ sub jobs_ready {
 
 sub enqueue {
   my ($self, $jobs) = @_;
-  my $group = $self->pg->db->query("INSERT INTO minion_banana_groups (status) VALUES ('running') RETURNING id")->hash->{id};
+  my $group = $self->pg->db->query("INSERT INTO minion_banana_groups DEFAULT VALUES RETURNING id")->hash->{id};
   $self->_enqueue($group, $jobs, []);
 }
 
@@ -144,8 +144,8 @@ sub _enqueue {
   } else {
     $job->[2]{queue} = 'waitdeps';
     my $id = $self->minion->enqueue(@$job);
-    $self->pg->db->query('INSERT INTO minion_banana_jobs (job, group_id) VALUES  (?,?)', $id, $group)->rows;
-    $self->pg->db->query('INSERT INTO minion_banana_job_deps (job, depends) SELECT ?, dep FROM unnest(?::bigint[]) g(dep)', $id, $parents)->rows if @$parents;
+    $self->pg->db->query('INSERT INTO minion_banana_jobs (id, group_id) VALUES  (?,?)', $id, $group)->rows;
+    $self->pg->db->query('INSERT INTO minion_banana_job_deps (job_id, parent_id) SELECT ?, dep FROM unnest(?::bigint[]) g(dep)', $id, $parents)->rows if @$parents;
     return [$id];
   }
 }
@@ -179,12 +179,12 @@ sub notify {
 sub group_status {
   my ($self, $group, $cb) = @_;
   my $sql = <<'  SQL';
-    SELECT job.job, job.status, json_agg(deps.depends)
+    SELECT job.id, job.status, json_agg(parents.parent_id) AS parents
     FROM minion_banana_groups groups
     LEFT JOIN minion_banana_jobs job ON job.group_id=groups.id
-    LEFT JOIN minion_banana_job_deps deps ON job.job=deps.job
+    LEFT JOIN minion_banana_job_deps parents ON job.id=parents.job_id
     WHERE groups.id=?
-    GROUP BY job.job, deps.depends
+    GROUP BY job.id, parents.parent_id
   SQL
   return $self->pg->db->query($sql, $group)->hashes unless $cb;
   $sql->pg->db->query($sql, $group, sub {
@@ -213,17 +213,17 @@ __DATA__
 -- 1 up
 CREATE TABLE minion_banana_groups (
   id BIGSERIAL PRIMARY KEY,
-  structure JSONB,
-  status TEXT
+  created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE minion_banana_jobs (
-  job BIGINT PRIMARY KEY,
+  id BIGINT PRIMARY KEY,
   group_id BIGINT REFERENCES minion_banana_groups(id) ON DELETE CASCADE,
   status TEXT DEFAULT 'waiting'
 );
 CREATE TABLE minion_banana_job_deps (
-  job BIGINT REFERENCES minion_banana_jobs(job) ON DELETE CASCADE,
-  depends BIGINT REFERENCES minion_banana_jobs(job)
+  job_id BIGINT REFERENCES minion_banana_jobs(id) ON DELETE CASCADE,
+  parent_id BIGINT REFERENCES minion_banana_jobs(id),
+  UNIQUE (job_id, parent_id)
 );
 --1 down;
 DROP TABLE IF EXISTS minion_banana_job_deps;
