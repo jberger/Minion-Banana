@@ -69,7 +69,7 @@ sub _update {
     UPDATE minion_banana_jobs
     SET status=?
     WHERE job=? AND status='enabled'
-    RETURNING job, job_group, status
+    RETURNING job, group_id, status
   SQL
   my @args = ($success ? 'finished' : 'failed', $job);
   return $self->pg->db->query($query, @args) unless $cb;
@@ -109,7 +109,7 @@ sub jobs_ready {
     WHERE
       jobs.status='waiting'
       AND (parent.status IS NULL OR parent.status='finished')
-      AND (jobs.job_group = $1 OR $1 IS NULL)
+      AND (jobs.group_id = $1 OR $1 IS NULL)
     GROUP BY jobs.job
   SQL
   return $self->pg->db->query($query, $group)->arrays->flatten->to_array unless $cb;
@@ -122,7 +122,7 @@ sub jobs_ready {
 
 sub enqueue {
   my ($self, $jobs) = @_;
-  my $group = $self->pg->db->query("INSERT INTO minion_banana_groups (status) VALUES ('running') RETURNING job_group")->hash->{job_group};
+  my $group = $self->pg->db->query("INSERT INTO minion_banana_groups (status) VALUES ('running') RETURNING id")->hash->{id};
   $self->_enqueue($group, $jobs, []);
 }
 
@@ -144,7 +144,7 @@ sub _enqueue {
   } else {
     $job->[2]{queue} = 'waitdeps';
     my $id = $self->minion->enqueue(@$job);
-    $self->pg->db->query('INSERT INTO minion_banana_jobs (job, job_group) VALUES  (?,?)', $id, $group)->rows;
+    $self->pg->db->query('INSERT INTO minion_banana_jobs (job, group_id) VALUES  (?,?)', $id, $group)->rows;
     $self->pg->db->query('INSERT INTO minion_banana_job_deps (job, depends) SELECT ?, dep FROM unnest(?::bigint[]) g(dep)', $id, $parents)->rows if @$parents;
     return [$id];
   }
@@ -181,9 +181,9 @@ sub group_status {
   my $sql = <<'  SQL';
     SELECT job.job, job.status, json_agg(deps.depends)
     FROM minion_banana_groups groups
-    LEFT JOIN minion_banana_jobs job ON job.job_group=groups.job_group
+    LEFT JOIN minion_banana_jobs job ON job.group_id=groups.id
     LEFT JOIN minion_banana_job_deps deps ON job.job=deps.job
-    WHERE groups.job_group=?
+    WHERE groups.id=?
     GROUP BY job.job, deps.depends
   SQL
   return $self->pg->db->query($sql, $group)->hashes unless $cb;
@@ -212,17 +212,17 @@ __DATA__
 @@ minion_banana
 -- 1 up
 CREATE TABLE minion_banana_groups (
-  job_group BIGSERIAL PRIMARY KEY,
+  id BIGSERIAL PRIMARY KEY,
   structure JSONB,
   status TEXT
 );
 CREATE TABLE minion_banana_jobs (
   job BIGINT PRIMARY KEY,
-  job_group BIGINT REFERENCES minion_banana_groups(job_group),
+  group_id BIGINT REFERENCES minion_banana_groups(id) ON DELETE CASCADE,
   status TEXT DEFAULT 'waiting'
 );
 CREATE TABLE minion_banana_job_deps (
-  job BIGINT REFERENCES minion_banana_jobs(job),
+  job BIGINT REFERENCES minion_banana_jobs(job) ON DELETE CASCADE,
   depends BIGINT REFERENCES minion_banana_jobs(job)
 );
 --1 down;
