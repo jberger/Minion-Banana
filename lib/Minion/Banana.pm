@@ -124,6 +124,7 @@ sub enqueue {
   my ($self, $jobs) = @_;
   my $group = $self->pg->db->query("INSERT INTO minion_banana_groups DEFAULT VALUES RETURNING id")->hash->{id};
   $self->_enqueue($group, $jobs, []);
+  return $group;
 }
 
 sub _enqueue {
