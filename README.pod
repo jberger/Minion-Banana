@@ -1,0 +1,16 @@
+=head1 NAME
+
+Minion::Banana - Motivate your Minions!
+
+=head1 SYNOPSIS
+
+  $ perl ex/app.pl worker &
+  $ perl ex/app.pl eval 'app->load' # load the example job group
+  $ perl ex/app.pl eval 'app->minion_banana->manage'
+
+
+=head1 COPYRIGHT AND LICENSE
+
+Minion::Banana is Copyright (C) 2013-2015 by Joel Berger
+
+This library is free software; you can redistribute it and/or modify it under the same terms as Perl itself.

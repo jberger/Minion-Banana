@@ -22,3 +22,4 @@ helper load => sub {
 };
 
 app->start;
+
