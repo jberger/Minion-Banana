@@ -122,9 +122,13 @@ sub jobs_ready {
 
 sub enqueue {
   my ($self, $jobs) = @_;
-  my $group = $self->pg->db->query("INSERT INTO minion_banana_groups DEFAULT VALUES RETURNING id")->hash->{id};
+  my $group = $self->_enqueue_group;
   $self->_enqueue($group, $jobs, []);
   return $group;
+}
+
+sub _enqueue_group {
+  return shift->pg->db->query("INSERT INTO minion_banana_groups DEFAULT VALUES RETURNING id")->hash->{id};
 }
 
 sub _enqueue {
@@ -143,16 +147,21 @@ sub _enqueue {
     }
     return \@ids;
   } else {
-    $job->[2]{queue} = 'waitdeps';
-    my $id = $self->minion->enqueue(@$job);
-    $self->pg->db->query('INSERT INTO minion_banana_jobs (id, group_id) VALUES  (?,?)', $id, $group);
-    $self->pg->db->query(<<'    SQL', $id, $parents) if @$parents;
-      INSERT INTO minion_banana_job_deps (job_id, parent_id)
-      SELECT ?, parent
-      FROM unnest(?::bigint[]) g(parent)
-    SQL
-    return [$id];
+    return $self->_enqueue_job($group, $job, $parents); # this is always a leaf in the graph
   }
+}
+
+sub _enqueue_job {
+  my ($self, $group, $job, $parents) = @_;
+  $job->[2]{queue} = 'waitdeps';
+  my $id = $self->minion->enqueue(@$job);
+  $self->pg->db->query('INSERT INTO minion_banana_jobs (id, group_id) VALUES  (?,?)', $id, $group);
+  $self->pg->db->query(<<'  SQL', $id, $parents) if @$parents;
+    INSERT INTO minion_banana_job_deps (job_id, parent_id)
+    SELECT ?, parent
+    FROM unnest(?::bigint[]) g(parent)
+  SQL
+  return [$id];
 }
 
 sub _worker {
