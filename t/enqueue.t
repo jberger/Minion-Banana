@@ -18,6 +18,13 @@ my $enqueue_job = Mock::MonkeyPatch->patch(
   }
 );
 
+sub reset_mocks {
+  local $Test::Builder::Level = $Test::Builder::Level + 1;
+  fail '_enqueue_group was not called' unless $enqueue_group->called;
+  fail '_enqueue_job was not called'   unless $enqueue_job->called;
+  $_->reset for ($enqueue_group, $enqueue_job);
+}
+
 my $banana = Minion::Banana->new;
 
 subtest 'simple sequence' => sub {
@@ -33,6 +40,8 @@ subtest 'simple sequence' => sub {
     [2, 'two', [1]],
     [3, 'three', [2]],
   ]);
+
+  reset_mocks;
 };
 
 subtest 'simple parallel' => sub {
@@ -48,6 +57,8 @@ subtest 'simple parallel' => sub {
     [2, 'two', []],
     [3, 'three', []],
   ]);
+
+  reset_mocks;
 };
 
 subtest 'sequence containing parallel' => sub {
@@ -69,6 +80,8 @@ subtest 'sequence containing parallel' => sub {
     [4, 'three',  [1]],
     [5, 'after',  [2,3,4]],
   ]);
+
+  reset_mocks;
 };
 
 done_testing;
