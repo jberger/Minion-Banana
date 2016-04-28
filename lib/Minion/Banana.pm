@@ -145,8 +145,12 @@ sub _enqueue {
   } else {
     $job->[2]{queue} = 'waitdeps';
     my $id = $self->minion->enqueue(@$job);
-    $self->pg->db->query('INSERT INTO minion_banana_jobs (id, group_id) VALUES  (?,?)', $id, $group)->rows;
-    $self->pg->db->query('INSERT INTO minion_banana_job_deps (job_id, parent_id) SELECT ?, dep FROM unnest(?::bigint[]) g(dep)', $id, $parents)->rows if @$parents;
+    $self->pg->db->query('INSERT INTO minion_banana_jobs (id, group_id) VALUES  (?,?)', $id, $group);
+    $self->pg->db->query(<<'    SQL', $id, $parents) if @$parents;
+      INSERT INTO minion_banana_job_deps (job_id, parent_id)
+      SELECT ?, parent
+      FROM unnest(?::bigint[]) g(parent)
+    SQL
     return [$id];
   }
 }
