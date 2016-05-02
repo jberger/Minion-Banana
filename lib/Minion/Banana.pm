@@ -1,6 +1,6 @@
 package Minion::Banana;
 
-use Mojo::Base -base;
+use Mojo::Base 'Mojo::EventEmitter';
 use Mojo::Pg;
 use Mojo::Pg::Migrations;
 use Mojo::JSON 'j';
@@ -22,6 +22,15 @@ has pg => sub {
   return $backend->pg;
 };
 
+sub new {
+  my $self = shift->SUPER::new(@_);
+  $self->on(ready => sub {
+    my ($self, $jobs) = @_;
+    $self->enable_jobs($jobs, sub{});
+  });
+  return $self;
+}
+
 sub app { shift->minion->app }
 
 sub attach {
@@ -40,25 +49,22 @@ sub manage {
   $self->pg->pubsub->listen(minion_banana => sub {
     my ($pubsub, $payload) = @_;
     my $data = j $payload;
-    if ($data->{success}) {
-      Mojo::IOLoop->delay(
-        sub { $self->_update($data->{job}, 1, shift->begin) },
-        sub {
-          my ($delay, $err, $results) = @_;
-          die $err if $err;
-          return unless $results->rows;
-          $self->jobs_ready($results->hash->{group}, shift->begin);
-        },
-        sub {
-          my ($delay, $err, $jobs) = @_;
-          die $err if $err;
-          $self->enable_jobs($jobs, $delay->begin);
-        },
-        sub { say 'done' },
-      )->catch(sub { warn "update failed: $_[1]" });
-    } else {
-      $self->_update($data->{job}, 0, sub {})
-    }
+    return $self->_update($data->{job}, 0, sub {})
+      unless $data->{success};
+    Mojo::IOLoop->delay(
+      sub { $self->_update($data->{job}, 1, shift->begin) },
+      sub {
+        my ($delay, $err, $results) = @_;
+        die $err if $err;
+        return unless $results->rows;
+        $self->jobs_ready($results->hash->{group}, shift->begin);
+      },
+      sub {
+        my ($delay, $err, $jobs) = @_;
+        die $err if $err;
+        $self->emit(ready => $jobs);
+      },
+    )->catch(sub { warn "update failed: $_[1]" });
   });
   Mojo::IOLoop->start;
 }

@@ -130,7 +130,7 @@ subtest 'sequence containing parallel containing sequence' => sub {
     [4, 'two',   [3]],
     [5, 'three', [4]],
     [6, 'p3',    [1]],
-    [7, 's3',    [2,5,6]], # I would prefer this be [2,3,4,5,6]
+    [7, 's3',    [2,5,6]],
   ]);
 
   reset_mocks;
