@@ -6,6 +6,7 @@ use Mojo::Pg::Migrations;
 use Mojo::JSON 'j';
 use Mojo::IOLoop;
 
+use Devel::GlobalDestruction ();
 use Safe::Isa '$_isa';
 
 # see Importer.pm
@@ -64,7 +65,10 @@ sub manage {
         die $err if $err;
         $self->emit(ready => $jobs);
       },
-    )->catch(sub { shift->emit(error => $_[1]) });
+    )->catch(sub {
+      return if Devel::GlobalDestruction::in_global_destruction;
+      $self->emit(error => $_[1]);
+    });
   });
   Mojo::IOLoop->start;
 }
@@ -207,12 +211,13 @@ sub group_status {
     LEFT JOIN minion_banana_job_deps parents ON job.id=parents.job_id
     WHERE groups.id=?
     GROUP BY job.id, parents.parent_id
+    ORDER BY job.id ASC
   SQL
-  return $self->pg->db->query($sql, $group)->hashes unless $cb;
+  return $self->pg->db->query($sql, $group)->expand->hashes unless $cb;
   $sql->pg->db->query($sql, $group, sub {
     my ($db, $err, $results) = @_;
     return $cb->($err, undef) if $err;
-    $cb->(undef, $results->hashes);
+    $cb->(undef, $results->expand->hashes);
   });
 }
 
