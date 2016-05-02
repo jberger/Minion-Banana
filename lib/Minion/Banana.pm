@@ -64,7 +64,7 @@ sub manage {
         die $err if $err;
         $self->emit(ready => $jobs);
       },
-    )->catch(sub { warn "update failed: $_[1]" });
+    )->catch(sub { shift->emit(error => $_[1]) });
   });
   Mojo::IOLoop->start;
 }
@@ -81,7 +81,8 @@ sub _update {
   return $self->pg->db->query($query, @args) unless $cb;
   $self->pg->db->query($query, @args, sub {
     my ($db, $err, $results) = @_;
-    $self->$cb($err, $results);
+    return $self->$cb("Update error: $err", undef) if $err;
+    $self->$cb(undef, $results);
   });
 }
 
@@ -101,7 +102,8 @@ sub enable_jobs {
   return $self->pg->db->query($query, $jobs)->rows unless $cb;
   $self->pg->db->query($query, $jobs, sub {
     my ($db, $err, $results) = @_;
-    $self->$cb($err, $results ? $results->rows : undef);
+    return $self->$cb("Enable jobs error: $err") if $err;
+    $self->$cb(undef, $results ? $results->rows : undef);
   });
 }
 
@@ -121,7 +123,7 @@ sub jobs_ready {
   return $self->pg->db->query($query, $group)->arrays->flatten->to_array unless $cb;
   $self->pg->db->query($query, $group, sub {
     my ($db, $err, $results) = @_;
-    return $self->$cb($err, undef) if $err;
+    return $self->$cb("Jobs ready check error: $err", undef) if $err;
     $self->$cb(undef, $results->arrays->flatten->to_array);
   });
 }
