@@ -18,67 +18,98 @@ $banana->unsubscribe('ready'); # prevent auto-enable;
 
 $minion->add_task('doit' => sub { });
 
-my $group = $banana->enqueue(
-  sequence([doit => ['zero']], [doit => ['one']], [doit => ['two']]),
-);
-my $status = $banana->group_status($group);
-my @id = map { $_->{id} } @$status;
-my $expect = [
-  {id => $id[0], parents => [undef],  status => 'waiting'},
-  {id => $id[1], parents => [$id[0]], status => 'waiting'},
-  {id => $id[2], parents => [$id[1]], status => 'waiting'},
-];
-
 # helper to run one job and return the new ready jobs from the event
 sub perform {
+  my $num = shift // 1;
   my $ready;
-  $banana->once(ready => sub {
+  my $count = 0;
+  my $cb = $banana->on(ready => sub {
     (undef, $ready) = @_;
-    Mojo::IOLoop->stop;
+    Mojo::IOLoop->stop if ++$count == $num;
   });
   Mojo::IOLoop->next_tick(sub { $minion->perform_jobs });
   $banana->manage;
+  $banana->unsubscribe(ready => $cb);
   return $ready;
 }
 
-# check initial state
-my $ready = $banana->jobs_ready($group);
-is_deeply $ready, [$id[0]], 'correct job ready';
-my $job = $minion->job($id[0]);
-is_deeply $status, $expect, 'correct status entries';
+subtest 'sequential jobs' => sub {
+  my $group = $banana->enqueue(
+    sequence([doit => ['zero']], [doit => ['one']], [doit => ['two']]),
+  );
+  my $status = $banana->group_status($group);
+  my @id = map { $_->{id} } @$status;
+  my $expect = [
+    {id => $id[0], parents => [undef],  status => 'waiting'},
+    {id => $id[1], parents => [$id[0]], status => 'waiting'},
+    {id => $id[2], parents => [$id[1]], status => 'waiting'},
+  ];
 
-# perform zero
-$ready = perform();
-$expect->[0]{status} = 'finished';
+  # check initial state
+  my $ready = $banana->jobs_ready($group);
+  is_deeply $ready, [$id[0]], 'correct job ready';
+  my $job = $minion->job($id[0]);
+  is_deeply $status, $expect, 'correct status entries';
 
-# check state after zero
-is_deeply $ready, [$id[1]], 'correct job ready';
-$job = $minion->job($id[1]);
-is_deeply $job->args, ['one'], 'got correct job';
+  # perform zero
+  $ready = perform();
+  $expect->[0]{status} = 'finished';
 
-$status = $banana->group_status($group);
-is_deeply $status, $expect, 'correct status entries';
+  # check state after zero
+  is_deeply $ready, [$id[1]], 'correct job ready';
+  $job = $minion->job($id[1]);
+  is_deeply $job->args, ['one'], 'got correct job';
 
-# perform one
-$ready = perform();
-$expect->[1]{status} = 'finished';
+  $status = $banana->group_status($group);
+  is_deeply $status, $expect, 'correct status entries';
 
-# check state after one
-is_deeply $ready, [$id[2]], 'correct job ready';
-$job = $minion->job($id[2]);
-is_deeply $job->args, ['two'], 'got correct job';
+  # perform one
+  $ready = perform();
+  $expect->[1]{status} = 'finished';
 
-$status = $banana->group_status($group);
-is_deeply $status, $expect, 'correct status entries';
+  # check state after one
+  is_deeply $ready, [$id[2]], 'correct job ready';
+  $job = $minion->job($id[2]);
+  is_deeply $job->args, ['two'], 'got correct job';
 
-# perform two
-$ready = perform();
-$expect->[2]{status} = 'finished';
+  $status = $banana->group_status($group);
+  is_deeply $status, $expect, 'correct status entries';
 
-# complete after two
-is_deeply $ready, [], 'no jobs ready (complete)';
-$status = $banana->group_status($group);
-is_deeply $status, $expect, 'correct status entries';
+  # perform two
+  $ready = perform();
+  $expect->[2]{status} = 'finished';
 
+  # complete after two
+  is_deeply $ready, [], 'no jobs ready (complete)';
+  $status = $banana->group_status($group);
+  is_deeply $status, $expect, 'correct status entries';
+};
+
+subtest 'parallel jobs' => sub {
+  my $group = $banana->enqueue(
+    parallel([doit => ['zero']], [doit => ['one']], [doit => ['two']]),
+  );
+  my $status = $banana->group_status($group);
+  my @id = map { $_->{id} } @$status;
+  my $expect = [
+    {id => $id[0], parents => [undef], status => 'waiting'},
+    {id => $id[1], parents => [undef], status => 'waiting'},
+    {id => $id[2], parents => [undef], status => 'waiting'},
+  ];
+
+  # check initial state
+  my $ready = $banana->jobs_ready($group);
+  is_deeply $ready, \@id, 'correct jobs ready';
+  is_deeply $status, $expect, 'correct status entries';
+
+  # perform zero
+  $ready = perform(3);
+  $expect->[$_]{status} = 'finished' for (0..2);
+
+  # complete after two
+  is_deeply $ready, [], 'no jobs ready (complete)';
+  $status = $banana->group_status($group);
+  is_deeply $status, $expect, 'correct status entries';
+};
 done_testing;
 

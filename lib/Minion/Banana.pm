@@ -47,7 +47,7 @@ sub manage {
   my $self = shift;
   my $jobs = $self->jobs_ready;
   $self->enable_jobs($jobs);
-  $self->pg->pubsub->listen(minion_banana => sub {
+  my $cb = $self->pg->pubsub->listen(minion_banana => sub {
     my ($pubsub, $payload) = @_;
     my $data = j $payload;
     return $self->_update($data->{job}, 0, sub {})
@@ -69,6 +69,10 @@ sub manage {
       return if Devel::GlobalDestruction::in_global_destruction;
       $self->emit(error => $_[1]);
     });
+  });
+  Mojo::IOLoop->singleton->once(finish => sub {
+    return if Devel::GlobalDestruction::in_global_destruction;
+    $self->pg->pubsub->unlisten(minion_banana => $cb);
   });
   Mojo::IOLoop->start;
 }
@@ -115,14 +119,15 @@ sub jobs_ready {
   my $cb = (ref $_[-1] && ref $_[-1] eq 'CODE') ? pop : undef;
   my ($self, $group) = @_; # $group is optional
   my $query = <<'  SQL';
-    SELECT jobs.id FROM minion_banana_jobs jobs
+    SELECT DISTINCT jobs.id
+    FROM minion_banana_jobs jobs
     LEFT JOIN minion_banana_job_deps parents ON jobs.id=parents.job_id
     LEFT JOIN minion_banana_jobs parent ON parents.parent_id=parent.id
     WHERE
       jobs.status='waiting'
       AND (parent.status IS NULL OR parent.status='finished')
       AND (jobs.group_id = $1 OR $1 IS NULL)
-    GROUP BY jobs.id
+    ORDER BY jobs.id ASC
   SQL
   return $self->pg->db->query($query, $group)->arrays->flatten->to_array unless $cb;
   $self->pg->db->query($query, $group, sub {
