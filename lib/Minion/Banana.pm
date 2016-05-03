@@ -23,15 +23,6 @@ has pg => sub {
   return $backend->pg;
 };
 
-sub new {
-  my $self = shift->SUPER::new(@_);
-  $self->on(ready => sub {
-    my ($self, $jobs) = @_;
-    $self->enable_jobs($jobs, sub{});
-  });
-  return $self;
-}
-
 sub app { shift->minion->app }
 
 sub attach {
@@ -41,6 +32,75 @@ sub attach {
   $self->minion->on(worker => \&_worker);
   $self->app->helper(minion_banana => sub { $self });
   return $self;
+}
+
+sub enable_jobs {
+  my ($self, $jobs, $cb) = @_;
+  $jobs = [$jobs ? $jobs : ()] unless ref $jobs;
+  return unless @$jobs;
+  my $minion = $self->minion;
+  for my $id (@$jobs) {
+    $self->minion->job($id)->retry({queue => 'default'});
+  }
+  my $query = <<'  SQL';
+    UPDATE minion_banana_jobs
+    SET status='enabled'
+    WHERE id=any(?) AND status='waiting'
+  SQL
+  return $self->pg->db->query($query, $jobs)->rows unless $cb;
+  $self->pg->db->query($query, $jobs, sub {
+    my ($db, $err, $results) = @_;
+    return $self->$cb("Enable jobs error: $err") if $err;
+    $self->$cb(undef, $results ? $results->rows : undef);
+  });
+}
+
+sub enqueue {
+  my ($self, $jobs) = @_;
+  my $group = $self->_enqueue_group;
+  $self->_enqueue($group, $jobs, []);
+  return $group;
+}
+
+sub group_status {
+  my ($self, $group, $cb) = @_;
+  my $sql = <<'  SQL';
+    SELECT job.id, job.status, json_agg(parents.parent_id) AS parents
+    FROM minion_banana_groups groups
+    LEFT JOIN minion_banana_jobs job ON job.group_id=groups.id
+    LEFT JOIN minion_banana_job_deps parents ON job.id=parents.job_id
+    WHERE groups.id=?
+    GROUP BY job.id, parents.parent_id
+    ORDER BY job.id ASC
+  SQL
+  return $self->pg->db->query($sql, $group)->expand->hashes unless $cb;
+  $sql->pg->db->query($sql, $group, sub {
+    my ($db, $err, $results) = @_;
+    return $cb->($err, undef) if $err;
+    $cb->(undef, $results->expand->hashes);
+  });
+}
+
+sub jobs_ready {
+  my $cb = (ref $_[-1] && ref $_[-1] eq 'CODE') ? pop : undef;
+  my ($self, $group) = @_; # $group is optional
+  my $query = <<'  SQL';
+    SELECT DISTINCT jobs.id
+    FROM minion_banana_jobs jobs
+    LEFT JOIN minion_banana_job_deps parents ON jobs.id=parents.job_id
+    LEFT JOIN minion_banana_jobs parent ON parents.parent_id=parent.id
+    WHERE
+      jobs.status='waiting'
+      AND (parent.status IS NULL OR parent.status='finished')
+      AND (jobs.group_id = $1 OR $1 IS NULL)
+    ORDER BY jobs.id ASC
+  SQL
+  return $self->pg->db->query($query, $group)->arrays->flatten->to_array unless $cb;
+  $self->pg->db->query($query, $group, sub {
+    my ($db, $err, $results) = @_;
+    return $self->$cb("Jobs ready check error: $err", undef) if $err;
+    $self->$cb(undef, $results->arrays->flatten->to_array);
+  });
 }
 
 sub manage {
@@ -77,75 +137,19 @@ sub manage {
   Mojo::IOLoop->start;
 }
 
-sub _update {
-  my ($self, $job, $success, $cb) = @_;
-  my $query = <<'  SQL';
-    UPDATE minion_banana_jobs
-    SET status=?
-    WHERE id=? AND status='enabled'
-    RETURNING id, group_id, status
-  SQL
-  my @args = ($success ? 'finished' : 'failed', $job);
-  return $self->pg->db->query($query, @args) unless $cb;
-  $self->pg->db->query($query, @args, sub {
-    my ($db, $err, $results) = @_;
-    return $self->$cb("Update error: $err", undef) if $err;
-    $self->$cb(undef, $results);
+sub new {
+  my $self = shift->SUPER::new(@_);
+  $self->on(ready => sub {
+    my ($self, $jobs) = @_;
+    $self->enable_jobs($jobs, sub{});
   });
+  return $self;
 }
 
-sub enable_jobs {
-  my ($self, $jobs, $cb) = @_;
-  $jobs = [$jobs ? $jobs : ()] unless ref $jobs;
-  return unless @$jobs;
-  my $minion = $self->minion;
-  for my $id (@$jobs) {
-    $self->minion->job($id)->retry({queue => 'default'});
-  }
-  my $query = <<'  SQL';
-    UPDATE minion_banana_jobs
-    SET status='enabled'
-    WHERE id=any(?) AND status='waiting'
-  SQL
-  return $self->pg->db->query($query, $jobs)->rows unless $cb;
-  $self->pg->db->query($query, $jobs, sub {
-    my ($db, $err, $results) = @_;
-    return $self->$cb("Enable jobs error: $err") if $err;
-    $self->$cb(undef, $results ? $results->rows : undef);
-  });
-}
-
-sub jobs_ready {
-  my $cb = (ref $_[-1] && ref $_[-1] eq 'CODE') ? pop : undef;
-  my ($self, $group) = @_; # $group is optional
-  my $query = <<'  SQL';
-    SELECT DISTINCT jobs.id
-    FROM minion_banana_jobs jobs
-    LEFT JOIN minion_banana_job_deps parents ON jobs.id=parents.job_id
-    LEFT JOIN minion_banana_jobs parent ON parents.parent_id=parent.id
-    WHERE
-      jobs.status='waiting'
-      AND (parent.status IS NULL OR parent.status='finished')
-      AND (jobs.group_id = $1 OR $1 IS NULL)
-    ORDER BY jobs.id ASC
-  SQL
-  return $self->pg->db->query($query, $group)->arrays->flatten->to_array unless $cb;
-  $self->pg->db->query($query, $group, sub {
-    my ($db, $err, $results) = @_;
-    return $self->$cb("Jobs ready check error: $err", undef) if $err;
-    $self->$cb(undef, $results->arrays->flatten->to_array);
-  });
-}
-
-sub enqueue {
-  my ($self, $jobs) = @_;
-  my $group = $self->_enqueue_group;
-  $self->_enqueue($group, $jobs, []);
-  return $group;
-}
-
-sub _enqueue_group {
-  return shift->pg->db->query("INSERT INTO minion_banana_groups DEFAULT VALUES RETURNING id")->hash->{id};
+sub _dequeue {
+  my ($worker, $job) = @_;
+  $job->on(finished => \&_finished);
+  $job->on(failed   => \&_failed);
 }
 
 sub _enqueue {
@@ -168,6 +172,10 @@ sub _enqueue {
   }
 }
 
+sub _enqueue_group {
+  return shift->pg->db->query("INSERT INTO minion_banana_groups DEFAULT VALUES RETURNING id")->hash->{id};
+}
+
 sub _enqueue_job {
   my ($self, $group, $job, $parents) = @_;
   $job->[2]{queue} = 'waitdeps';
@@ -181,50 +189,44 @@ sub _enqueue_job {
   return [$id];
 }
 
+sub _failed {
+  my ($job, $err) = @_;
+  $job->app->minion_banana->_notify($job, 0);
+}
+
+sub _finished {
+  my ($job, $result) = @_;
+  $job->app->minion_banana->_notify($job, 1);
+}
+
+sub _notify {
+  my ($self, $job, $success) = @_;
+  $self->pg->pubsub->notify(minion_banana => j({job => $job->id, success => $success ? \1 : \0}));
+}
+
+sub _update {
+  my ($self, $job, $success, $cb) = @_;
+  my $query = <<'  SQL';
+    UPDATE minion_banana_jobs
+    SET status=?
+    WHERE id=? AND status='enabled'
+    RETURNING id, group_id, status
+  SQL
+  my @args = ($success ? 'finished' : 'failed', $job);
+  return $self->pg->db->query($query, @args) unless $cb;
+  $self->pg->db->query($query, @args, sub {
+    my ($db, $err, $results) = @_;
+    return $self->$cb("Update error: $err", undef) if $err;
+    $self->$cb(undef, $results);
+  });
+}
+
 sub _worker {
   my ($minion, $worker) = @_;
   $worker->on(dequeue => \&_dequeue);
 }
 
-sub _dequeue {
-  my ($worker, $job) = @_;
-  $job->on(finished => \&_finished);
-  $job->on(failed   => \&_failed);
-}
-
-sub _finished {
-  my ($job, $result) = @_;
-  $job->app->minion_banana->notify($job, 1);
-}
-
-sub _failed {
-  my ($job, $err) = @_;
-  $job->app->minion_banana->notify($job, 0);
-}
-
-sub notify {
-  my ($self, $job, $success) = @_;
-  $self->pg->pubsub->notify(minion_banana => j({job => $job->id, success => $success ? \1 : \0}));
-}
-
-sub group_status {
-  my ($self, $group, $cb) = @_;
-  my $sql = <<'  SQL';
-    SELECT job.id, job.status, json_agg(parents.parent_id) AS parents
-    FROM minion_banana_groups groups
-    LEFT JOIN minion_banana_jobs job ON job.group_id=groups.id
-    LEFT JOIN minion_banana_job_deps parents ON job.id=parents.job_id
-    WHERE groups.id=?
-    GROUP BY job.id, parents.parent_id
-    ORDER BY job.id ASC
-  SQL
-  return $self->pg->db->query($sql, $group)->expand->hashes unless $cb;
-  $sql->pg->db->query($sql, $group, sub {
-    my ($db, $err, $results) = @_;
-    return $cb->($err, undef) if $err;
-    $cb->(undef, $results->expand->hashes);
-  });
-}
+# classes and functions
 
 {
   package Minion::Banana::Parallel;
@@ -238,6 +240,71 @@ sub parallel { Minion::Banana::Parallel->new(@_) }
 sub sequence { Minion::Banana::Sequence->new(@_) }
 
 'BA-NA-NA!';
+
+=head1 NAME
+
+Minion::Banana - Motivate your Minions! Higher level Minion management.
+
+=head1 SYNOPSIS
+
+  use Importer 'Minion::Banana' => qw/parallel sequence/;
+
+  $app->plugin(Minion => \%backend);
+  $app->minion->add_task(mytask => sub { ... });
+
+  $app->plugin('Minion::Banana');
+  $app->minion_banana->enqueue(
+    sequence(
+      [mytask => \@args],
+      parallel(
+        [mytask => \@args],
+        [mytask => \@args],
+      ),
+      [mytask => \@args],
+    )
+  );
+
+  # TODO add banana/manage commands
+  $ ./myapp.pl minion banana manage
+
+=head1 DESCRIPTION
+
+L<Minion::Banana> is a job manager for L<Minion>.
+It is especially built for handling job dependencies, it might be useful for more than that.
+
+=head1 CONVENIENCE FUNCTIONS
+
+=head2 parallel
+
+=head2 sequence
+
+=head1 ATTRIBUTES
+
+=head2 migrations
+
+=head2 minion
+
+=head2 pg
+
+=head1 METHODS
+
+=head2 app
+
+=head2 attach
+
+=head2 enable_jobs
+
+=head2 enqueue
+
+=head2 group_status
+
+=head2 jobs_ready
+
+=head2 manage
+
+=head2 new
+
+=cut
 
 __DATA__
 
