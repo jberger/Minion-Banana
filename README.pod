@@ -1,16 +1,146 @@
 =head1 NAME
 
-Minion::Banana - Motivate your Minions!
+Minion::Banana - Motivate your Minions! Higher level Minion management.
 
 =head1 SYNOPSIS
 
-  $ perl ex/app.pl worker &
-  $ perl ex/app.pl eval 'app->load' # load the example job group
-  $ perl ex/app.pl eval 'app->minion_banana->manage'
+  use Importer 'Minion::Banana' => qw/parallel sequence/;
 
+  $app->plugin(Minion => \%backend);
+  $app->minion->add_task(mytask => sub { ... });
+
+  $app->plugin('Minion::Banana');
+  $app->minion_banana->enqueue(
+    sequence(
+      [mytask => \@args],
+      parallel(
+        [mytask => \@args],
+        [mytask => \@args],
+      ),
+      [mytask => \@args],
+    )
+  );
+
+  # TODO add banana/manage commands
+  $ ./myapp.pl minion banana manage
+
+=head1 DESCRIPTION
+
+L<Minion::Banana> is a job manager for L<Minion>.
+It is especially built for handling job dependencies, it might be useful for more than that.
+
+=head1 CONVENIENCE FUNCTIONS
+
+Users may import the following convenience functions if desired.
+See L<Importer> for details.
+
+=head2 parallel
+
+Convenience function constructor for L<Minion::Banana::Parallel>
+
+=head2 sequence
+
+Convenience function constructor for L<Minion::Banana::Sequence>
+
+=head1 EVENTS
+
+L<Minion::Banana> inherits all of the events from L<Mojo::EventEmitter> and emits the following new ones.
+
+=head2 ready
+
+Emitted when jobs in a group become ready to perform.
+
+=head1 ATTRIBUTES
+
+L<Minion::Banana> inherits all of the attributes from L<Mojo::EventEmitter> and implements the following new ones.
+
+=head2 migrations
+
+An instance of L<Mojo::Pg::Migrations>.
+
+=head2 minion
+
+An instance of L<Minion>, required.
+
+=head2 pg
+
+An instance of L<Mojo::Pg> taken from L</minion> if possible and not otherwise specified.
+
+=head1 METHODS
+
+L<Minion::Banana> inherits all of the methods from L<Mojo::EventEmitter> and implements the following new ones.
+
+=head2 app
+
+Convenience method to access the application object from L</minion>.
+
+=head2 attach
+
+This method should be called once in the application startup to correctly setup necessary functionality.
+It needs to be called after the L<Mojolicious::Plugin::Minion> is loaded.
+It is called for you by L<Mojolicious::Plugin::Minion::Banana>.
+
+=head2 enable_jobs
+
+Takes an array reference of job ids and "retries" them, moving them from the parking lot queue to an active queue.
+
+=head2 enqueue
+
+Enqueue one or more jobs as a group, these can be either an array reference representing a call to L<Minion/enqueue> or a L<Minion::Banana::Parallel> or L<Minion::Banana::Sequence> of jobs.
+
+=head2 group_status
+
+Given a group id, returns a data structure with Minion::Banana's view of the contained jobs.
+
+=head2 jobs_ready
+
+Returns an array reference of job ids that are ready to be enabled (ie. whose dependencies are satisfied).
+Optionally takes a group id to limit the returned jobs to those in a particular group.
+
+=head2 manage
+
+Run the actual job manager.
+This method starts the L<Mojo::IOLoop> and should not be called within a running loop.
+Stop the loop in order to stop the manager.
+
+=head2 new
+
+Creates and returns a new instance of L<Minion::Banana>.
+Also attaches a default subscriber to the L</ready> event which immediately calls L</enable_jobs>.
+
+=head1 SEE ALSO
+
+=over
+
+=item *
+
+L<Mojolicious> - Real-time web framework
+
+=item *
+
+L<Minion> - The L<Mojolicious> job queue
+
+=item *
+
+L<Minion::Notifier> - A related project for notifying on job state changes.
+
+=back
+
+=head1 SOURCE REPOSITORY
+
+L<http://github.com/jberger/Minion-Notifier>
+
+=head1 AUTHOR
+
+Joel Berger, E<lt>joel.a.berger@gmail.comE<gt>
+
+=head1 DEVELOPMENT SPONSORED BY
+
+ServerCentral - L<http://servercentral.com>
 
 =head1 COPYRIGHT AND LICENSE
 
-Minion::Banana is Copyright (C) 2013-2015 by Joel Berger
+Copyright (C) 2016 by Joel Berger
+This library is free software; you can redistribute it and/or modify
+it under the same terms as Perl itself.
 
-This library is free software; you can redistribute it and/or modify it under the same terms as Perl itself.
