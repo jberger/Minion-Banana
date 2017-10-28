@@ -125,7 +125,7 @@ sub manage {
         die $err if $err;
         $self->emit(ready => $jobs);
       },
-    )->catch(sub {
+    )->tap(on => error => sub {
       return if Devel::GlobalDestruction::in_global_destruction;
       $self->emit(error => $_[1]);
     });
